@@ -1,0 +1,576 @@
+#!/usr/bin/perl
+
+# An all in one program for processing .FIT files recorded during a soleniod scan analysis
+# Useful information stored in the headers of the .FIT files:
+
+# SIMPLE  = file does conform to FITS standard
+# BITPIX  = number of bits per data pixel
+# NAXIS   = number of data axes
+# NAXIS1  = length of data axis 1
+# NAXIS2  = length of data axis 2
+# EXTEND  = FITS dataset may contain extensions   
+# BZERO   = DATA ZERO
+# BSCALE  = DATA SCALE
+# EXPTIME = duration of exposure in seconds***
+# XBINNING= binning factor used on X axis
+# YBINNING= binning factor used on Y axis
+# XORGSUBF= subframe origin on X axis
+# YORGSUBF= subframe origin on Y axis
+# CCD-TEMP= CCD Temperature (C)***
+# BASETEMP= Heatsink Temperature (C)
+# INSTRUME= camera model***
+# CAM-MODE= camera mode***
+# SERIAL  = camera serial
+# IMAGETYP= frame type
+# DATE-OBS= date of observation (UTC)***
+# DATE    = file creation date (YYYY-MM-DDThh:mm:ss UT)
+# *** - stored in $cam
+# Author: Ben Rickman (rickman.ben@gmail.com)
+
+use warnings;
+use strict;
+use PDL;
+use PDL::Image2D;
+use lib '/home/ben/perl5/lib';
+use PDL::Graphics::PGPLOT::Window::Extender;
+use PDL::Fit::Gaussian;
+use PDL::Fit::LM;
+use PDL::MatrixOps;
+use File::chdir;
+use Getopt::Long;
+use Pod::Usage;
+use Data::Dumper;
+
+my $pixel = 5.4; ## pixel size of CCD in microns
+$pixel /= 1000;
+my $bins; # Keep track of binning
+my $cam;
+my @data;
+
+GetOptions(
+  'auto'	=> \my $auto,
+  'filename=s'	=> \my $fn,
+  'background'	=> \my $background,
+  'polarization'=> \my $p_scan,
+  'current'	=> \my $c_scan,
+  'voltage'	=> \my $v_scan,
+  'scan_type=s'	=> \my $scan_type, 
+  'regex=s'	=> \my $reg,
+  'help'	=> \my $help,
+  'gaussian=i'	=> \(my $gaussian_fit = 1),
+  'trace=i'	=> \(my $trace_method = 1),
+);
+
+pod2usage(verbose=>1, -input => "/home/ben/Documents/Research/E_Gun/Camera/FITS-Analyze/README.pod") if $help;
+
+# Shift and change the working directory where the files to be processed are stored
+my $dir = shift;
+die "ERROR: Specify a directory to process\n" unless $dir;
+local $CWD = $dir;
+
+die "ERROR: Bad -g value\n" unless grep {$gaussian_fit == $_ } (1..2);
+die "ERROR: Bad -t value\n" unless grep {$trace_method == $_ } (1..3);
+die "ERROR: Can't call more than one type of scan option \n" if ($p_scan&&$c_scan)||($c_scan&&$v_scan)||($v_scan&&$p_scan)||($p_scan&&$scan_type)||($c_scan&&$scan_type)||($v_scan&&$scan_type);
+
+$scan_type = $c_scan ? 'solenoid' : $scan_type;
+$scan_type = $v_scan ? 'voltage' : $scan_type;
+$scan_type = $p_scan ? 'polarization' : $scan_type;
+
+if (defined $scan_type) {
+  if ($scan_type =~ /(sol(enoid)?)|(s)|(cur(rent)?)|(c)/) {
+    $scan_type = 'solenoid';
+  } elsif ($scan_type =~ /(voltage)|(volt?)|(v)/) {
+    $scan_type = 'voltage';
+  } elsif ($scan_type =~ /(polar(izatoin)?)|(pol)|(p)/) {
+    $scan_type = 'polarization';
+  } else {
+    die "ERROR: Bad -s value\n";
+  }
+} else {
+  print "Using regex for solenoid scan by default\n" unless defined $reg;
+  $scan_type = "solenoid";
+}
+
+my $scan_info = {
+  'polarization' => {
+    'id'	=> $p_scan,
+    'param-hdr'	=> 'Polarization (deg)',
+    'regex'	=> '_(\d+[p.]?\d*)deg',
+    'fn-id'	=> 'pol-scan',
+    'col-hdrs'	=> join("\t", ('X HW1/eM (mm)', 'Y HW1/eM (mm)','Amplitude (unitless)','file')),
+    'col-ord'	=> [qw/param wx wy amp file/],
+    'col-format'=> "\%.1f\t%.6f\t%.6f\t%.0f\t\%s",
+  },
+  'solenoid' => {
+    'id'	=> $c_scan,
+    'param-hdr'	=> 'Current (A)',
+    'regex'	=> '_(-?\d+[p.]\d+)A',
+    'fn-id'	=> 'sol-scan',
+    'col-hdrs'	=> join("\t", ('X HW1/eM (mm)', 'Y HW1/eM (mm)','file')),
+    'col-ord'	=> [qw/param wx wy file/],
+    'col-format'=> "\%.2f\t%.6f\t%.6f\t\%s",
+   },
+  'voltage' => {
+    'id'	=> $v_scan,
+    'param-hdr'	=> 'Voltage (V)',
+    'regex'	=> '_(\d+[p.]?\d*)kV',
+    'fn-id'	=> 'volt-scan',
+    'col-hdrs'	=> join("\t", ('X HW1/eM (mm)', 'Y HW1/eM (mm)','file')),
+    'col-ord'	=> [qw/param wx wy file/],
+    'col-format'=> "\%.1f\t%.6f\t%.6f\t\%s",
+  },
+};
+
+$$scan_info{$scan_type}{'col-hdrs'} = $$scan_info{$scan_type}{'param-hdr'} . "\t" . $$scan_info{$scan_type}{'col-hdrs'};
+
+if (defined $reg) {
+  my $reg_params = () = $reg =~ /\(/g; print "$reg_params\n";
+  print "Custom regex detected: $reg\nWhat is the parameter name and unit?";
+  chomp(my $input = <>);
+  my $hdr = $reg_params == 1 ? $input : "$input: " . join("\t",map {"param$_"} (1..$reg_params));
+  my $form = join("\t",map {"\%s"} (1..$reg_params)); 
+  $$scan_info{'user-def'} = {
+    'param-hdr'	=> $input || "User Defined (??)",
+    'regex'	=> $reg,
+    'fn-id'	=> $$scan_info{$scan_type}{'fn-id'},
+    'col-hdrs'	=> join("\t", ($hdr, 'X HW1/eM (mm)', 'Y HW1/eM (mm)','Amplitude (unitless)','file')),
+    'col-ord'	=> [qw/param wx wy amp file/],
+    'col-format'=> "$form\t%.6f\t%.6f\t%.0f\t\%s",
+  };
+  $scan_type = 'user-def';
+}
+
+# Collect all the .FIT files
+my @files = do {
+  opendir(my $dh, ".") or die "ERROR: Can't open that directory";
+  grep(/\.fit$/,readdir($dh));
+};
+
+# Check file to export data
+my $today = localtime;
+my @today = localtime; 
+$fn = defined $fn ? $fn : sprintf '%s_tr%d_%d-%d-%d', ($scan_info->{$scan_type}{'fn-id'},$trace_method, $today[4]+1, $today[3], $today[5]+1900);
+$fn = $fn =~ /\.dat$/ ? $fn : $fn . '.dat';
+if (-e $fn) {
+  warn "The file $fn already exists, do you wish to continue (y/n)?\n";
+  chomp(my $input = <>);
+  while ( $input !~ 'Y|n|N|y') {chomp($input = <>); }
+  die "Exiting\n" if $input =~ /n|N/;
+}
+
+my $term_cols = `tput cols`;
+my $max_fn = '';
+
+my $geoms;
+for my $file (@files) {
+  $max_fn = length($max_fn) < length($file) && $file !~ /(bkgd)|(background)/ ? $file : $max_fn;
+  my $hdr = grfits($file,{data=>0});
+  if (!defined $cam->{EXPTIME}) {
+    map { $cam->{$_} = $hdr->{$_} } qw/EXPTIME CCD-TEMP DATE-OBS INSTRUME CAM-MODE/;
+  }
+  if ( ($hdr->{XBINNING} != 1 || $hdr->{YBINNING} != 1) && !$bins){
+    warn "Pixels were binned in the analysis (check files)\n"; $bins++;
+  }
+  warn "Possible error in $file formatting\n" if $hdr->{SIMPLE} == 0;
+  my $key = join "_", map {$hdr->{$_}} qw/NAXIS1 NAXIS2 XORGSUBF YORGSUBF/;
+  push @{$geoms->{$key}}, $file;
+}
+
+# Formating Variables
+my $col_w = length($max_fn) + 3;
+my $cols = ($term_cols - ($term_cols % $col_w) ) / $col_w;
+$cols += ($term_cols % $col_w) > length($max_fn) ? 1 : 0;
+
+# Start Processing of data files
+for (keys %{$geoms}) {
+  my @bkgd_files = sort { (stat($a))[9] cmp (stat($b))[9] } grep { /(bkgd)|(background)/ } @{$geoms->{$_}};
+  my @data_files = sort { (stat($a))[9] cmp (stat($b))[9] } grep { !/(bkgd)|(background)/ } @{$geoms->{$_}};
+  print "Geometry: $_\n";
+  print "-" for (1..$term_cols); print "\n";
+  for my $i (0..@data_files-1) {
+    printf "%-${col_w}s", ${data_files[$i]} if ($i+1) % $cols;
+    print "${data_files[$i]}\n"  unless ($i+1) % $cols;
+  }
+  print "\n\nBackground files:\n";
+  print "[1]: ${bkgd_files[0]}\n";
+  print map {" " . ($_+1) . " : ${bkgd_files[$_]}\n"} (1..@bkgd_files-1) if @bkgd_files > 1;
+  print "\n";
+
+  # Background file selection and comparision
+  if ($background) {
+    my $bkgd = grfits($bkgd_files[0]);
+    my ($max,$xx,$yy) = max2d_ind($bkgd);
+    my ($x_dim,$y_dim) = $bkgd->dims();
+    my $height = 7;
+    my $win = PGPLOT::Extender->new(
+      Dev  => '/xserve',
+      size => [$height*$x_dim/$y_dim,$height,1],
+    );
+#    $bkgd->hdr->{CUNIT1} = "";
+#    $bkgd->hdr->{CUNIT2} = "";
+    $win->env(0, $x_dim, 0, $y_dim,{Title=>"Background",PlotPosition => [0.1, 0.9, 0.1, 0.9], axis => 0});
+    $win->fits_imag($bkgd);
+    $win->cursor({Type=>'Default'});
+    if (@bkgd_files > 1) {
+    for (@bkgd_files[1..@bkgd_files-1]) {
+      $win->fits_imag( ($bkgd - grfits($_))/$max );
+      $win->cursor({Type=>'Default'});
+    }
+    $win->close();
+    }
+  }
+  my $bkgd = grfits($bkgd_files[0]); ## TODO bkgd file selection
+
+  # Press enter to begin PGPLOT Analysis
+
+  my $file_num = 1;
+  for my $file (@data_files) {
+    my ($param,$err_regex);
+    if ($file =~ $$scan_info{$scan_type}{'regex'}) {
+      my @param = $file =~ $$scan_info{$scan_type}{'regex'};
+      @param = map { (my $temp = $_) =~ s/p/\./g; $temp } @param;
+      $param = \@param;
+    } else { 
+      # On a failed match, signal to enter $param manually later on
+      $err_regex = 1; 
+    }
+    # make a pdl of the data and remove the background
+    my $data = grfits($file) - $bkgd;
+    my $hdr = grfits($file,{data=>0});
+    my ($date,$time) = split 'T', $hdr->{'DATE-OBS'};
+    $date =~ s/-/\//g;
+
+    $data->hdr->{CUNIT1} = "";
+    $data->hdr->{CUNIT2} = "";  # clear units on axes
+
+    my ($max,$xmax,$ymax) = max2d_ind $data; # Collect the max of the data file
+    my ($x_dim,$y_dim) = $data->dims; # Get the dimensions of the pdl
+    my $height = 7; # Height of the window environment
+
+    # Start a window environment
+    my $win = PGPLOT::Extender->new(
+      Dev  => '/xserve',
+      size => [$height*$x_dim/$y_dim,$height,1],
+    );
+
+    # Wrapper for the whole window
+    $win->env(0, 1, 0, .9,{Title => $file_num++ . " of " . @data_files . ": $file",PlotPosition => [0,1,0,.9],axis=>-2}); 
+    $win->text(sprintf('%s', $date),        0,.125, {CHARSIZE => .75, color => 'green'});
+    $win->text(sprintf('%s', $time),        0,.100, {CHARSIZE => .75, color => 'green'});
+    $win->text(sprintf('Exposure: %.3fs', $hdr->{'EXPTIME'}), 0,.075, {CHARSIZE => .75, color => 'green'});
+    $win->text(sprintf('Temp: %.2f C',  $hdr->{'CCD-TEMP'} ), 0,.050, {CHARSIZE => .75, color => 'green'});
+    $win->text(sprintf('Mode: %s', $hdr->{'CAM-MODE'} ),      0,.025, {CHARSIZE => .75, color => 'green'});
+
+    # Sub window for the FIT pic
+    $win->env(0, $x_dim, 0, $y_dim,{PlotPosition => [0.2, 0.9, 0.2, 0.9], axis => 0});
+    $win->fits_imag($data);
+    # Draw estimate of Center
+    $win->points($xmax,$ymax,{symbol => 'cross', color => 'blue', linewidth => 4});
+    # Draw a 2mm bar
+    $win->text('2mm',$x_dim/30,60+$x_dim/30, {CHARSIZE => 0.5, color => 'black',justification => 0});
+    $win->rect( $x_dim/30, 370+$x_dim/30, $x_dim/30, 50+$x_dim/30,{color=>'black',filltype=>1});
+    $win->rect( 92.5+$x_dim/30, 185+$x_dim/30, 5+$x_dim/30, 45+$x_dim/30,{color=>'white',filltype=>1});
+    $win->rect( 277.5+$x_dim/30, 365+$x_dim/30, 5+$x_dim/30, 45+$x_dim/30,{color=>'white',filltype=>1});
+    # ERR_REGEX
+    if ($err_regex) {
+      my $state = $win->ret_hist;
+      $win->env(0, 1, 0, 1, {PlotPosition => [0.2, 0.9, 0.2, 0.9], axis=>-2});
+      $win->text('REGEX ERROR: Enter Param manually in terminal',0.5,0.5, {charsize => 1, color => 'white',BackgroundColour=>'red',justification=>0.5});
+      printf "Enter the param for the FIT displayed (\%s) to match the following regex\n\%s: ", $file, $$scan_info{$scan_type}{'regex'};
+      chomp($param = <>);
+      $param =~ s/p/\./g;
+      $param = [$param];
+      $win->plot_hist($state);
+    }
+
+    # Sub Windows for Gaussian fits
+    my $fits = fit_slice($win,$data,$xmax,$ymax);
+    
+
+    # Instructions
+    $win->env(0, 1, 0, 1, {PlotPosition => [0.2, 0.9, 0.2, 0.9], axis=>-2});
+    $win->text('Left: Keep Point',0.98,0.95, {CHARSIZE => 1, color => 'green',justification => 1});
+    $win->text('Right: New Point',0.98,0.90, {CHARSIZE => 1, color => 'green',justification => 1});
+    $win->text('Center: Keep Fit',0.98,0.85, {CHARSIZE => 1, color => 'green',justification => 1});
+ 
+   # Redraw env to collect FIT pixel data. Cursor channels: A D X (Left Center Right)
+    $win->env(0, $x_dim, 0, $y_dim, {PlotPosition => [0.2, 0.9, 0.2, 0.9], axis=>-2});
+    my ($cur_x, $cur_y, $cur_ch, $cur_xref, $cur_yref) = $win->cursor({Type=>'CrossHair',xref=>$xmax,yref=>$ymax}) unless $auto;
+
+    if ($trace_method == 1) {
+    ## TRACE METHOD 1
+      # Wait for left click to keep center point
+      until ($auto || $cur_ch eq 'A') {
+        # Round Cursor Pos to integer
+        ($cur_x, $cur_y) = (long($cur_x),long($cur_y));
+        # right click draws new point
+        if ($cur_ch eq 'X') {
+          $win->points($cur_x,$cur_y,{symbol => 'cross', color => 'red'});
+          $fits = fit_slice($win,$data,$cur_x,$cur_y);
+        }
+        # click to repeat or keep
+        $win->env(0, $x_dim, 0, $y_dim, {PlotPosition => [0.2, 0.9, 0.2, 0.9], axis=>-2});
+        $win->del_hist(1);
+        ($cur_x, $cur_y, $cur_ch, $cur_xref, $cur_yref) = $win->cursor({Type=>'CrossHair',xref=>$cur_x,yref=>$cur_y});
+      }
+    } else {
+    ## TRACE METHOD 2 & 3
+      # Right click draws new point
+      while ($cur_ch eq 'X') {
+        # Round Cursor Pos to integer
+        ($cur_x, $cur_y) = (long($cur_x),long($cur_y));
+        $win->points($cur_x,$cur_y,{symbol => 'cross', color => 'red'});
+        $fits = fit_slice($win,$data,$cur_x,$cur_y);
+        $win->env(0, $x_dim, 0, $y_dim, {PlotPosition => [0.2, 0.9, 0.2, 0.9], axis=>-2});
+        # Click to repeat or keep
+        ($cur_x, $cur_y, $cur_ch, $cur_xref, $cur_yref) = $win->cursor({Type=>'CrossHair',xref=>$cur_x,yref=>$cur_y});
+      }
+
+      if ($cur_ch eq 'A') {
+        $win->env(0, 1, 0, 1, {PlotPosition => [0.2, 0.9, 0.2, 0.9], axis=>-2});
+        $win->text('Draw Major Axis (2 Left Clicks)',0.5,1.0, {charsize => 1, color => 'white',BackgroundColour=>'green',justification=>0.5});
+        $win->env(0, $x_dim, 0, $y_dim, {PlotPosition => [0.2, 0.9, 0.2, 0.9], axis=>-2});
+        my ($cur_x1, $cur_y1) = $win->cursor({Type=>'RadialLine',xref=>$cur_xref,yref=>$cur_yref});
+        my ($cur_x2, $cur_y2) = $win->cursor({Type=>'RadialLine',xref=>$cur_x1,yref=>$cur_y1});
+
+        if ($trace_method == 2) {
+        ## TRACE METHOD 2 ONLY
+          my $angle = abs (atan2(($cur_x1-$cur_x2),($cur_y1-$cur_y2)) );
+          my ($f_wx,$f_wy) = ($fits->{'x'}{hwem},$fits->{'y'}{hwem}); 
+          my $rf_wx = - ( -($f_wy*cos($angle))**2 + ($f_wx*sin($angle))**2 )/( ($f_wx*$f_wy)**2 * (cos($angle)**4 - sin($angle)**4) );
+          my $rf_wy = - ( -($f_wx*cos($angle))**2 + ($f_wy*sin($angle))**2 )/( ($f_wx*$f_wy)**2 * (cos($angle)**4 - sin($angle)**4) );
+          $rf_wx = $rf_wx**(-0.5);
+          $rf_wy = $rf_wy**(-0.5);
+
+          ($rf_wx,$rf_wy) = sort { $a < $b } ($rf_wx,$rf_wy);
+          ($fits->{'x'}{hwem},$fits->{'y'}{hwem}) = ($rf_wx,$rf_wy);
+          disp_fit_params($win,$fits);
+          $win->cursor({Type=>'Default'});
+
+        } else {
+        ## TRACE METHOD 3 ONLY
+          my $slope;
+          eval { $slope = ($cur_y1-$cur_y2)/($cur_x1-$cur_x2); }; warn $@ if $@;
+          my $b_pts1 = box([$slope,[$cur_xref,$cur_yref]],[[0,0],[$x_dim-1,$y_dim-1]]);
+          my $b_pts2 = box([-1/$slope,[$cur_xref,$cur_yref]],[[0,0],[$x_dim-1,$y_dim-1]]);
+          my $trace1 = pdl trace($data,$b_pts1,$slope);
+          my $trace2 = pdl trace($data,$b_pts2,-1/$slope);
+          my $initp1 = pdl [$max,$cur_xref,$x_dim/2,0];
+          my $initp2 = pdl [$max,$cur_yref,$y_dim/2,0];
+          my ($tr1_ym,$tr1_initp) = lmfit $trace1->slice('0')->squeeze(), $trace1->slice('1')->squeeze(), 1, \&gauss_func, $initp1, {Maxiter => 300, Eps => 1e-10};
+          my ($tr2_ym,$tr2_initp) = lmfit $trace2->slice('0')->squeeze(), $trace2->slice('1')->squeeze(), 1, \&gauss_func, $initp2, {Maxiter => 300, Eps => 1e-10};
+          my ($w1,$w2) = (abs( $tr1_initp->index(2) ), abs( $tr2_initp->index(2) ));
+
+          $win->line($trace1->slice('2'), $trace1->slice('3'));
+          $win->line($trace2->slice('2'), $trace2->slice('3'));
+          ($fits->{'x'}{hwem},$fits->{'y'}{hwem}) = ($w1*sqrt(2),$w2*sqrt(2));
+          ($fits->{'x'}{fit},$fits->{'y'}{fit}) = ($tr1_ym,$tr2_ym);
+
+  $win->plot_hist();
+  my $state = $win->ret_hist;
+          plot_fits($win,$trace1->slice('1')->squeeze(),$fits,'x');
+          plot_fits($win,$trace2->slice('1')->squeeze(),$fits,'y');
+          disp_fit_params($win,$fits);
+  $win->set_hist($state);
+
+          $win->cursor({Type=>'Default'});
+        }
+      }
+    }
+    
+    push @data, {
+      'param' 	=> $param,
+      'wx'	=> $fits->{'x'}{hwem}*$pixel,
+      'wy'	=> $fits->{'y'}{hwem}*$pixel,
+      'file'	=> $file,
+      'amp'	=> ($fits->{'x'}{amp} + $fits->{'y'}{amp})/2,
+    };
+    $win->close();
+  }
+}
+
+# Print data to file
+print "Exporting data to $fn\n";
+open my $OUT, "> $fn" or die; 
+print $OUT <<EOF;
+# File analysed on $today using solenoid_scan_analysis.pl
+# Trace method: $trace_method
+# Gaussian fit method: $gaussian_fit
+EOF
+print $OUT $scan_info->{$scan_type}{'col-hdrs'} . "\n";
+@data = sort {$a->{param}[0] cmp $b->{param}[0]} @data; 
+for my $datum (@data) {
+  my @ord;
+  for (@{$$scan_info{$scan_type}{'col-ord'}}) {
+    push @ord, ref $$datum{$_} eq 'ARRAY' ? @{$$datum{$_}} : $$datum{$_};
+  }
+  printf $OUT $$scan_info{$scan_type}{'col-format'}, @ord;
+  print $OUT "\n";
+}
+
+sub grfits {
+  my ($file,$opt) = @_;
+  return rfits($file,$opt) if defined $opt;
+  return float(rfits($file));
+}
+
+sub fit_slice {
+  my ($win, $data, $x_pt, $y_pt) = @_;
+  my $xwidth = $data->slice(":,($y_pt)");
+  my $ywidth = $data->slice("($x_pt),:");
+  # Fit Slices
+  my $fits->{'x'} = gauss_fit($xwidth,$x_pt);
+  $fits->{'y'} = gauss_fit($ywidth,$y_pt);
+  # Plot data and fit on sub plots along x axis (bottom plot) then y axis (left plot) 
+  $win->plot_hist();
+  my $state = $win->ret_hist;
+  plot_fits($win,$xwidth,$fits,'x');
+  plot_fits($win,$ywidth,$fits,'y');
+  # Display fit parameters
+  disp_fit_params($win,$fits);
+  $win->set_hist($state);
+  return $fits;
+}
+
+sub gauss_fit {
+  my ($slice,$point) = @_;
+  my $dim = $slice->getdim(0);
+  my $max = $slice->at($point);
+  my %fit;
+  if ($gaussian_fit == 1) {
+    # Fit to Gaussian Method 1
+    # Better Fit to background
+    my $initp0 = pdl [$max,$point,$dim/2,0]; ## FIXME
+    my ($ym,$initp,$covar,$iters);
+    eval { ($ym,$initp,$covar,$iters) = lmfit(sequence($dim), $slice, 1, \&gauss_func, $initp0, {Maxiter => 300, Eps => 1e-10}) }; 
+    if ($@) {
+      my @temp = fitgauss1d(sequence($dim),$slice);
+      $fit{hwem}  = $temp[2]/ (2*sqrt(log(2)));
+      $fit{error} = $temp[4];
+      $fit{fit}   = $temp[5];
+      return \%fit;
+    }
+    $fit{hwem}  = abs($initp->at(2)*sqrt(2));
+    $fit{error} = 0;
+    $fit{fit}   = $ym;
+    $fit{amp}	= $initp->at(0) - $initp->at(3);
+  } else {
+    # Fit to Gaussian Method 2
+    # Error is pretty much zero for most pics
+    # returns ($cen, $pk, $fwhm, $back, $err, $fit)
+    my @temp = fitgauss1d(sequence($dim),$slice);
+    $fit{hwem}  = $temp[2]/ (2*sqrt(log(2)));
+    $fit{error} = $temp[4];
+    $fit{fit}   = $temp[5];
+  }
+  return \%fit;
+}
+
+sub plot_fits {
+  my ($win,$data,$fit,$dir) = @_;
+  my $var = sequence($data->getdim(0));
+  if ($dir eq 'x') {
+    $win->env(0, $data->getdim(0), 0, 1.1*$data->max(),{PlotPosition => [0.2, 0.9, 0.0, 0.1],axis=>-1});
+    $win->line($var,$data,{color => 6,linewidth => 4});
+    $win->hold;
+    $win->line($var,$fit->{$dir}{fit},{color => 5,linewidth => 4});
+    $win->release;
+  } else {
+    $win->env(0, 1.1*$data->max(), 0, $data->getdim(0),{PlotPosition => [0.0, 0.1, 0.2, 0.9],axis=>-1});
+    $win->line($data,$var,{color => 6,linewidth => 4});
+    $win->hold;
+    $win->line($fit->{$dir}{fit},$var,{color => 5,linewidth => 4});
+    $win->release;
+  }
+}
+
+sub disp_fit_params {
+  my ($win,$fits) = @_;
+  $win->env(0, 1, 0, 1, {PlotPosition => [0.2, 0.9, 0.2, 0.9], axis=>-2});
+  $win->text(sprintf('  X HW1/eM: %.3f +/- %.3fmm', $fits->{'x'}{hwem}*$pixel, $fits->{'x'}{error}*$pixel), 0.99,0.12, {charsize => 1, color => 'cyan', justification => 1,BackgroundColour=>0});
+  $win->text(sprintf('  Y HW1/eM: %.3f +/- %.3fmm', $fits->{'y'}{hwem}*$pixel, $fits->{'y'}{error}*$pixel), 0.99,0.07, {charsize => 1, color => 'cyan', justification => 1,BackgroundColour=>0});
+  $win->text(sprintf('Avg HW1/eM: %.3f +/- %.3fmm', ($fits->{'y'}{hwem}+$fits->{'x'}{hwem})/2*$pixel, sqrt(($fits->{'y'}{hwem}-$fits->{'x'}{hwem})**2)/sqrt(2)*$pixel ), 0.99,.02, {charsize => 1, color => 'cyan', justification => 1,BackgroundColour=>0});
+}
+
+sub trace {
+  my ($data,$pts,$slope) = @_;
+  my $trace;
+  my $index0 = [sprintf("%.f",$$pts[0][0]),sprintf("%.f",$$pts[0][1])];
+  my $index1 = [sprintf("%.f",$$pts[1][0]),sprintf("%.f",$$pts[1][1])];
+  my $index = $index0;
+  my $pt = $$pts[0];
+  my $dist = 0;
+  until ($$index[0] == $$index1[0] && $$index[1] == $$index1[1]) {
+    my ($pt0,$index_new) = next_box([$slope,$pt],$index);
+    $dist += sqrt(($$pt[1]-$$pt0[1])**2 + ($$pt[0]-$$pt0[0])**2);
+    push @$trace, [$dist->sclr(), $data->at(@$index),$$index[0],$$index[1]];
+    ($pt, $index) = ($pt0,$index_new);
+  }
+  return $trace;
+}
+
+sub next_box {
+  my ($line,$index) = @_;
+  my $b_pts = box($line,[[$$index[0]-.5,$$index[1]-.5],[$$index[0]+.5,$$index[1]+.5]]);
+  for (0..1) {
+    if ($$b_pts[1][$_]==$$index[$_]-.5) {
+      $$index[$_] -= 1;
+    } elsif ($$b_pts[1][$_]==$$index[$_]+.5) {
+      $$index[$_] += 1;
+    } else {
+      # Do nothing
+    }
+  }
+  return ($$b_pts[1],$index);
+}
+
+sub box {
+  my ($line,$box) = @_;
+  my $m = $$line[0];
+  my $b;
+  if (ref $$line[1] eq 'ARRAY') {
+    $b = $$line[1][1] - $m * $$line[1][0];
+  } else {
+    $b = $$line[1];
+  };
+  my ($x0,$y0) = @{$$box[0]};
+  my ($x1,$y1) = @{$$box[1]};
+
+  my @corners = ( [$x0,$y0], [$x0,$y1], [$x1,$y1], [$x1,$y0]);
+  my @boundry = map {$m * $_->[0] + $b - $_->[1]} @corners;
+  @boundry = map { $_ > 0 ? 1 : $_ } map { $_ < 0 ? -1 : $_ } map { $_ == 0 ? 0 : $_ } @boundry;
+
+  my $sum;
+  $sum += $_ for @boundry;
+  if (abs($sum) == 3) {
+    warn "line intersects only a corner\n";
+    return 0;
+  } elsif (abs($sum) == 4) {
+    warn "line does not enter a box\n";
+    return 0;
+  }
+
+  my @points = map { $corners[$_] } grep { $boundry[$_] == 0 } (0..3);
+
+  for my $j (0..3) {
+    if ($boundry[$j] + $boundry[$j-1] == 0) {
+      push @points, [$corners[$j]->[0], $corners[$j]->[0]*$m+$b]   if $corners[$j]->[0]==$corners[$j-1]->[0];
+      push @points, [($corners[$j]->[1]-$b)/$m, $corners[$j]->[1]] if $corners[$j]->[1]==$corners[$j-1]->[1];
+    }
+  }
+
+  @points = reverse @points if $points[0][1] > $points[1][1];
+  @points = reverse @points if $points[0][0] > $points[1][0] && $points[0][1] == $points[1][1];
+  return \@points;
+}
+
+sub gauss_func {
+  my ($x,$par,$ym,$dyda) = @_;
+  my ($a,$b,$c,$d) = map { $par->slice("($_)") } (0..3);
+  $ym .= $a * exp(-( ($x - $b)**2 / (2 * $c**2) ) ) + $d;
+  my (@dy) = map {$dyda -> slice(",($_)") } (0..3);
+  $dy[0] .= exp(-( ($x - $b)**2 / (2 * $c**2) ) );
+  $dy[1] .= exp(-( ($x - $b)**2 / (2 * $c**2) ) ) * $a * ($x - $b) / $c**2;
+  $dy[2] .= exp(-( ($x - $b)**2 / (2 * $c**2) ) ) * $a * ($x - $b)**2 / $c**3;
+  $dy[3] .= 1;
+}
