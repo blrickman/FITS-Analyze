@@ -8,10 +8,6 @@ fit_analyze - A program for analyzing .FIT files
 
 fir_analyze [options] directory/
 
-=head1 AUTHOR
-
-Ben Rickman L<brickm2@uic.edu>
-
 =head1 OPTIONS
 
 =over 8
@@ -73,5 +69,9 @@ run voltage scan analysis
 display this help message
 
 =back
+
+=head1 AUTHOR
+
+Ben Rickman <brickm2@uic.edu>
 
 =cut
