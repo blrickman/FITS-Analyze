@@ -1,0 +1,71 @@
+=pod
+
+=head1 NAME
+
+fit_analyze - A program for analyzing .FIT files
+
+=head1 SYNOPSIS
+
+fir_analyze [options] directory/
+
+=head1 AUTHOR
+
+Ben Rickman L<brickm2@uic.edu>
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<-a, --auto>
+
+automatically run through the analysis
+
+=item B<-b, --background>
+
+run background analysis
+
+=item B<-f, --filename>
+
+specify output filename
+
+=item B<-r, --regex>
+
+choose unique param identifier
+
+=item B<-g, --gaussian>
+
+choose gaussian fit method (default is 1)
+
+=item B<-t, --trace>
+
+choose a tracing method (default is 1)
+
+=over 16
+
+=item B<1> Horizontal and Vertical trace method			-  Fast
+
+=item B<2> Horizontal and Vertical trace method with Rotation	-  Accurate
+
+=item B<3> Rotated Orthogonal trace method			-  Very Accurate
+
+=back
+
+=item B<-c, --current>
+
+run soleniod scan analysis
+
+=item B<-p, --polarization>
+
+run polarization scan analysis
+
+=item B<-v, --voltage>
+
+run voltage scan analysis
+
+=item B<-h, --help>
+
+display this help message
+
+=back
+
+=cut
