@@ -42,11 +42,14 @@ choose a tracing method (default is 1)
 
 =over 16
 
-=item B<1> Horizontal and Vertical trace method			-  Fast
+=item B<1>
+Horizontal and Vertical trace method			-  Fast
 
-=item B<2> Horizontal and Vertical trace method with Rotation	-  Accurate
+=item B<2> 
+Horizontal and Vertical trace method with Rotation	-  Accurate
 
-=item B<3> Rotated Orthogonal trace method			-  Very Accurate
+=item B<3> 
+Rotated Orthogonal trace method			-  Very Accurate
 
 =back
 
