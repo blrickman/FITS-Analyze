@@ -81,7 +81,7 @@ if (defined $scan_type) {
     $scan_type = 'solenoid';
   } elsif ($scan_type =~ /(voltage)|(volt?)|(v)/) {
     $scan_type = 'voltage';
-  } elsif ($scan_type =~ /(polar(izatoin)?)|(pol)|(p)/) {
+  } elsif ($scan_type =~ /(polar(ization)?)|(pol)|(p)/) {
     $scan_type = 'polarization';
   } else {
     die "ERROR: Bad -s value\n";
