@@ -398,7 +398,7 @@ print $OUT <<EOF;
 # Gaussian fit method: $gaussian_fit
 EOF
 print $OUT $scan_info->{$scan_type}{'col-hdrs'} . "\n";
-@data = sort {$a->{param}[0] cmp $b->{param}[0]} @data; 
+@data = sort {$a->{param}[0] <=> $b->{param}[0]} @data; 
 for my $datum (@data) {
   my @ord;
   for (@{$$scan_info{$scan_type}{'col-ord'}}) {
