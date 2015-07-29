@@ -351,8 +351,8 @@ for (keys %{$geoms}) {
         } else {
         ## TRACE METHOD 3 ONLY
           my $slope;
-          $cur_x2 = $cur_x1 == $cur_x2 ? $cur_x2+1 : $cur_x2;
-          eval { $slope = ($cur_y1-$cur_y2)/($cur_x1-$cur_x2); }; warn $@ if $@; #TODO fix 1/0 problem
+          $cur_x2 = $cur_x1 == $cur_x2 ? $cur_x2+1 : $cur_x2; # Hackey fix to 1/0 problem. TODO make it better
+          eval { $slope = ($cur_y1-$cur_y2)/($cur_x1-$cur_x2); }; warn $@ if $@; 
           my $b_pts1 = box([$slope,[$cur_xref,$cur_yref]],[[0,0],[$x_dim-1,$y_dim-1]]);
           my $b_pts2 = box([-1/$slope,[$cur_xref,$cur_yref]],[[0,0],[$x_dim-1,$y_dim-1]]);
           my $trace1 = pdl trace($data,$b_pts1,$slope);
