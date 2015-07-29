@@ -360,8 +360,8 @@ for my $file (@data_files) {
         my $initp1 = pdl [$max,$cur_xref,$x_dim/2,0];
         my $initp2 = pdl [$max,$cur_yref,$y_dim/2,0];
         my ($tr1_ym,$tr1_initp,$tr2_ym,$tr2_initp);
-        eval { ($tr1_ym,$tr1_initp) = lmfit $trace1->slice('0')->squeeze(), $trace1->slice('1')->squeeze(), 1, \&gauss_func, $initp1, {Maxiter => 300, Eps => 1e-10} }; warn "it happened\n" if $@;
-        eval { ($tr2_ym,$tr2_initp) = lmfit $trace2->slice('0')->squeeze(), $trace2->slice('1')->squeeze(), 1, \&gauss_func, $initp2, {Maxiter => 300, Eps => 1e-10} }; warn "it happened again?\n" if $@;
+        eval { ($tr1_ym,$tr1_initp) = lmfit $trace1->slice('0')->squeeze(), $trace1->slice('1')->squeeze(), 1, \&gauss_func, $initp1, {Maxiter => 1000, Eps => 1e-10} }; warn "it happened\n" if $@;
+        eval { ($tr2_ym,$tr2_initp) = lmfit $trace2->slice('0')->squeeze(), $trace2->slice('1')->squeeze(), 1, \&gauss_func, $initp2, {Maxiter => 1000, Eps => 1e-10} }; warn "it happened again?\n" if $@;
         my ($w1,$w2) = (abs( $tr1_initp->index(2) ), abs( $tr2_initp->index(2) ));
 
         $win->line($trace1->slice('2'), $trace1->slice('3'));
