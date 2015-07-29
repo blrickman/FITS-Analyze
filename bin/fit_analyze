@@ -183,6 +183,7 @@ $cols += ($term_cols % $col_w) > length($max_fn) ? 1 : 0;
 
 # Start Processing of data files
 for (keys %{$geoms}) {
+
   my @bkgd_files = sort { (stat($a))[9] cmp (stat($b))[9] } grep { /(bkgd)|(background)/ } @{$geoms->{$_}};
   my @data_files = sort { (stat($a))[9] cmp (stat($b))[9] } grep { !/(bkgd)|(background)/ } @{$geoms->{$_}};
   print "Geometry: $_\n";
@@ -350,15 +351,17 @@ for (keys %{$geoms}) {
         } else {
         ## TRACE METHOD 3 ONLY
           my $slope;
-          eval { $slope = ($cur_y1-$cur_y2)/($cur_x1-$cur_x2); }; warn $@ if $@;
+          $cur_x2 = $cur_x1 == $cur_x2 ? $cur_x2+1 : $cur_x2;
+          eval { $slope = ($cur_y1-$cur_y2)/($cur_x1-$cur_x2); }; warn $@ if $@; #TODO fix 1/0 problem
           my $b_pts1 = box([$slope,[$cur_xref,$cur_yref]],[[0,0],[$x_dim-1,$y_dim-1]]);
           my $b_pts2 = box([-1/$slope,[$cur_xref,$cur_yref]],[[0,0],[$x_dim-1,$y_dim-1]]);
           my $trace1 = pdl trace($data,$b_pts1,$slope);
           my $trace2 = pdl trace($data,$b_pts2,-1/$slope);
           my $initp1 = pdl [$max,$cur_xref,$x_dim/2,0];
           my $initp2 = pdl [$max,$cur_yref,$y_dim/2,0];
-          my ($tr1_ym,$tr1_initp) = lmfit $trace1->slice('0')->squeeze(), $trace1->slice('1')->squeeze(), 1, \&gauss_func, $initp1, {Maxiter => 300, Eps => 1e-10};
-          my ($tr2_ym,$tr2_initp) = lmfit $trace2->slice('0')->squeeze(), $trace2->slice('1')->squeeze(), 1, \&gauss_func, $initp2, {Maxiter => 300, Eps => 1e-10};
+          my ($tr1_ym,$tr1_initp,$tr2_ym,$tr2_initp);
+          eval { ($tr1_ym,$tr1_initp) = lmfit $trace1->slice('0')->squeeze(), $trace1->slice('1')->squeeze(), 1, \&gauss_func, $initp1, {Maxiter => 300, Eps => 1e-10} }; warn "it happened\n" if $@;
+          eval { ($tr2_ym,$tr2_initp) = lmfit $trace2->slice('0')->squeeze(), $trace2->slice('1')->squeeze(), 1, \&gauss_func, $initp2, {Maxiter => 300, Eps => 1e-10} }; warn "it happened again?\n" if $@;
           my ($w1,$w2) = (abs( $tr1_initp->index(2) ), abs( $tr2_initp->index(2) ));
 
           $win->line($trace1->slice('2'), $trace1->slice('3'));
@@ -387,6 +390,7 @@ for (keys %{$geoms}) {
     };
     $win->close();
   }
+
 }
 
 # Print data to file
