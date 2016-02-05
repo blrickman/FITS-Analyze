@@ -48,6 +48,8 @@ $pixel /= 1000;
 my $bins; # Keep track of binning
 my $cam;
 my @data;
+my $today = localtime;
+my @today = localtime; 
 
 GetOptions(
   'auto'	=> \my $auto,
@@ -148,12 +150,6 @@ if (defined $reg) {
   $scan_type = 'user-def';
 }
 
-# Predefine the filename to export data to
-my $today = localtime;
-my @today = localtime; 
-$fn = defined $fn ? $fn : sprintf '%s_tr%d_%d-%d-%d', ($scan_info->{$scan_type}{'fn-id'},$trace_method, $today[4]+1, $today[3], $today[5]+1900);
-$fn = $fn =~ /\.dat$/ ? $fn : $fn . '.dat';
-
 # Collect all the .FIT files
 my @files = do {
   opendir(my $dh, ".") or die "ERROR: Can't open that directory";
@@ -186,10 +182,19 @@ if ($file_select eq 1) {
   @files = (@file_select, (grep {/(bkgd)|(background)/} @files));
 
   print "File selection successful, proceeding to next stage\n\n";
+
+  $fn = defined $fn ? $fn : sprintf '%s_selection_tr%d_%d-%d-%d', ($scan_info->{$scan_type}{'fn-id'},$trace_method, $today[4]+1, $today[3], $today[5]+1900);
+
 } elsif ($file_select) {
   print "File selection triggered for single file: $file_select. Proceeding to next stage\n\n";
   @files = ($file_select, (grep {/(bkgd)|(background)/} @files));
+  basename
+  $fn = defined $fn ? $fn : sprintf '%s__%s__tr%d_%d-%d-%d', ($scan_info->{$scan_type}{'fn-id'},basename($file_select,('.fit', '.fits')),$trace_method, $today[4]+1, $today[3], $today[5]+1900);
 }
+
+# Define the filename to export data to if not defined already
+$fn = defined $fn ? $fn : sprintf '%s_tr%d_%d-%d-%d', ($scan_info->{$scan_type}{'fn-id'},$trace_method, $today[4]+1, $today[3], $today[5]+1900);
+$fn = $fn =~ /\.dat$/ ? $fn : $fn . '.dat';
 
 # Check file to export data
 if (-e $fn) {
