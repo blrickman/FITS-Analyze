@@ -37,7 +37,7 @@ use PDL::Fit::Gaussian;
 use PDL::Fit::LM;
 use PDL::MatrixOps;
 use File::chdir;
-use Getopt::Long;
+use Getopt::Long qw(:config no_ignore_case);
 use Pod::Usage;
 use Data::Dumper;
 
@@ -333,10 +333,10 @@ for my $file (@data_files) {
       $win->env(0, $x_dim, 0, $y_dim, {PlotPosition => [0.2, 0.9, 0.2, 0.9], axis=>-2});
       my ($cur_x1, $cur_y1) = $win->cursor({Type=>'RadialLine',xref=>$cur_xref,yref=>$cur_yref});
       my ($cur_x2, $cur_y2) = $win->cursor({Type=>'RadialLine',xref=>$cur_x1,yref=>$cur_y1});
+      my $angle = abs (atan2(($cur_x1-$cur_x2),($cur_y1-$cur_y2)) );
 
       if ($trace_method == 2) {
       ## TRACE METHOD 2 ONLY
-        my $angle = abs (atan2(($cur_x1-$cur_x2),($cur_y1-$cur_y2)) );
         my ($f_wx,$f_wy) = ($fits->{'x'}{hwem},$fits->{'y'}{hwem}); 
         my $rf_wx = - ( -($f_wy*cos($angle))**2 + ($f_wx*sin($angle))**2 )/( ($f_wx*$f_wy)**2 * (cos($angle)**4 - sin($angle)**4) );
         my $rf_wy = - ( -($f_wx*cos($angle))**2 + ($f_wy*sin($angle))**2 )/( ($f_wx*$f_wy)**2 * (cos($angle)**4 - sin($angle)**4) );
@@ -412,6 +412,9 @@ for my $datum (@data) {
   print $OUT "\n";
 }
 
+# Kill PGPLOT Session
+`killall pgxwin_server`;
+
 sub grfits {
   my ($file,$opt) = @_;
   return rfits($file,$opt) if defined $opt;
@@ -437,6 +440,8 @@ sub fit_slice {
 }
 
 sub gauss_fit {
+  # Method to fit a gaussian of the form: a * exp( - x**2 / (2 * b**2) ) 
+
   my ($slice,$point) = @_;
   my $dim = $slice->getdim(0);
   my $max = $slice->at($point);
@@ -446,10 +451,21 @@ sub gauss_fit {
     # Better Fit to background
     my $initp0 = pdl [$max,$point,$dim/2,0]; ## FIXME
     my ($ym,$initp,$covar,$iters);
-    eval { ($ym,$initp,$covar,$iters) = lmfit(sequence($dim), $slice, 1, \&gauss_func, $initp0, {Maxiter => 300, Eps => 1e-10}) }; 
+    eval { 
+      ($ym,$initp,$covar,$iters) = 
+        lmfit(
+          sequence($dim),
+          $slice,
+          1,
+          \&gauss_func,
+          $initp0,
+          {Maxiter => 300, Eps => 1e-10}
+        ) 
+    }; # Catch bad fits
+    # If bad fit, use method 2
     if ($@) {
-      my @temp = fitgauss1d(sequence($dim),$slice);
-      $fit{hwem}  = $temp[2]/ (2*sqrt(log(2)));
+      my @temp = (sequence($dim),$slice);
+      $fit{hwem}  = $temp[2]/ (2*sqrt(log(2))); # Method 2 fits to FWHM and so needs conversion
       $fit{error} = $temp[4];
       $fit{fit}   = $temp[5];
       return \%fit;
