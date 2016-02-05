@@ -10,6 +10,8 @@ around 'cursor' => sub {
   my @click = $self->$func(@_);
   if ($click[2] =~ /Q|q/) {
     $self->close();
+    # Kill PGPLOT Session
+    `killall pgxwin_server`;
     die "Exiting\n";
   };
   return @click;
