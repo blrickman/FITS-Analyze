@@ -29,7 +29,7 @@
 
 use warnings;
 use strict;
-use PDL;
+use PDL ;
 use PDL::Image2D;
 use lib '/home/ben/perl5/lib';
 use PDL::Graphics::PGPLOT::Window::Extender;
@@ -158,7 +158,7 @@ my @files = do {
 
 # Set up variables for printing the files later
 my $term_cols = `tput cols`;
-my $max = (sort { $b <=> $a } map { length($_)} grep {!/(bkgd)|(background)/} @files)[0];
+my $max = (sort { $b <=> $a } map { length($_)} grep {!/(bkgd)|(background)/i} @files)[0];
 my $col_w = $max + 3;
 my $cols = ($term_cols - ($term_cols % $col_w) ) / $col_w;
 $cols += ($term_cols % $col_w) > $max ? 1 : 0;
@@ -169,7 +169,7 @@ if ($file_select eq 1) {
   my $file_w = $max + 3;
   my $cols = ($term_cols - ($term_cols % $col_w) ) / $col_w;
   $cols += ($term_cols % $col_w) > $max ? 1 : 0;
-  my @file_select = sort { (stat($a))[9] cmp (stat($b))[9] } grep {!/(bkgd)|(background)/} @files;
+  my @file_select = sort { (stat($a))[9] cmp (stat($b))[9] } grep {!/(bkgd)|(background)/i} @files;
 
   print "File selection triggered\nFiles listed in $dir:\n";
   for my $i (0..@file_select-1) {
@@ -179,7 +179,7 @@ if ($file_select eq 1) {
   print "\nEnter number(s) of files to fit separated by spaces (e.g. 1 4 39):\n";
 
   @file_select = @file_select[map {$_-1} split ' ', <>];
-  @files = (@file_select, (grep {/(bkgd)|(background)/} @files));
+  @files = (@file_select, (grep {/(bkgd)|(background)/i} @files));
 
   print "File selection successful, proceeding to next stage\n\n";
 
@@ -187,7 +187,7 @@ if ($file_select eq 1) {
 
 } elsif ($file_select) {
   print "File selection triggered for single file: $file_select. Proceeding to next stage\n\n";
-  @files = ($file_select, (grep {/(bkgd)|(background)/} @files));
+  @files = ($file_select, (grep {/(bkgd)|(background)/i} @files));
   basename
   $fn = defined $fn ? $fn : sprintf '%s__%s__tr%d_%d-%d-%d', ($scan_info->{$scan_type}{'fn-id'},basename($file_select,('.fit', '.fits')),$trace_method, $today[4]+1, $today[3], $today[5]+1900);
 }
@@ -222,8 +222,8 @@ for my $file (@files) {
 # Start Processing of data files
 for (keys %{$geoms}) {
 
-my @bkgd_files = sort { (stat($a))[9] cmp (stat($b))[9] } grep { /(bkgd)|(background)/ } @{$geoms->{$_}};
-my @data_files = sort { (stat($a))[9] cmp (stat($b))[9] } grep { !/(bkgd)|(background)/ } @{$geoms->{$_}};
+my @bkgd_files = sort { (stat($a))[9] cmp (stat($b))[9] } grep { /(bkgd)|(background)/i } @{$geoms->{$_}};
+my @data_files = sort { (stat($a))[9] cmp (stat($b))[9] } grep { !/(bkgd)|(background)/i } @{$geoms->{$_}};
 
 print "Geometry: $_\n";
 print "-" for (1..$term_cols); print "\n";
@@ -324,8 +324,13 @@ for my $file (@data_files) {
   }
 
   # Sub Windows for Gaussian fits
-  my $fits = fit_slice($win,$data,$xmax,$ymax);
-  
+  my $fits;
+  eval {$fits = fit_slice($win,$data,$xmax,$ymax)};
+  if ($@) {
+    ($xmax, $ymax) = $win->cursor({Type=>'CrossHair',xref=>$xmax,yref=>$ymax}) unless $auto;
+    $fits = fit_slice($win,$data,$xmax,$ymax);
+  }
+
 
   # Instructions
   $win->env(0, 1, 0, 1, {PlotPosition => [0.2, 0.9, 0.2, 0.9], axis=>-2});
@@ -365,7 +370,8 @@ for my $file (@data_files) {
       # Click to repeat or keep
       ($cur_x, $cur_y, $cur_ch, $cur_xref, $cur_yref) = $win->cursor({Type=>'CrossHair',xref=>$cur_x,yref=>$cur_y});
     }
-
+    # Center click keeps standard slice
+    # Left click keeps point
     if ($cur_ch eq 'A') {
       $win->env(0, 1, 0, 1, {PlotPosition => [0.2, 0.9, 0.2, 0.9], axis=>-2});
       $win->text('Draw Major Axis (2 Left Clicks)',0.5,1.0, {charsize => 1, color => 'white',BackgroundColour=>'green',justification=>0.5});
@@ -465,8 +471,12 @@ sub fit_slice {
   my $xwidth = $data->slice(":,($y_pt)");
   my $ywidth = $data->slice("($x_pt),:");
   # Fit Slices
-  my $fits->{'x'} = gauss_fit($xwidth,$x_pt);
-  $fits->{'y'} = gauss_fit($ywidth,$y_pt);
+  my $fits; 
+  eval {
+    $fits->{'x'} = gauss_fit($xwidth,$x_pt);
+    $fits->{'y'} = gauss_fit($ywidth,$y_pt);
+  };
+
   # Plot data and fit on sub plots along x axis (bottom plot) then y axis (left plot) 
   $win->plot_hist();
   my $state = $win->ret_hist;
@@ -503,7 +513,7 @@ sub gauss_fit {
     }; # Catch bad fits
     # If bad fit, use method 2
     if ($@) {
-      my @temp = (sequence($dim),$slice);
+      my @temp = fitgauss1d(sequence($dim),$slice);
       $fit{hwem}  = $temp[2]/ (2*sqrt(log(2))); # Method 2 fits to FWHM and so needs conversion
       $fit{error} = $temp[4];
       $fit{fit}   = $temp[5];
